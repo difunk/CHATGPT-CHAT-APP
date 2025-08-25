@@ -91,7 +91,7 @@ app.get("/history", (req, res) => {
       }
       res.json({
         success: true,
-        message: rows,
+        history: rows,
       });
     }
   );

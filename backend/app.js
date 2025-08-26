@@ -79,6 +79,49 @@ app.post("/", async (req, res) => {
   }
 });
 
+// stream endpukt
+app.post("/stream", async (req, res) => {
+  try {
+    const userMessage =
+      req.body.message || "Hello, I didn't write a question yet!";
+
+    let assistantResponse = "";
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: userMessage }],
+      max_tokens: 200,
+      temperature: 0,
+      top_p: 1,
+      frequency_penalty: 0,
+      presence_penalty: 0,
+      stream: true,
+    });
+
+    for await (const event of response) {
+      const content = event.choices[0]?.delta.content;
+      if (content) {
+        assistantResponse += content;
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    }
+
+    db.run(
+      "INSERT INTO chat (user_message, assistant_response) VALUES (?, ?)",
+      [userMessage, assistantResponse]
+    );
+
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
+  } catch (error) {
+    console.error(error);
+    res.end();
+  }
+});
+
 // history endpunkt
 app.get("/history", (req, res) => {
   const history = db.all(

@@ -5,6 +5,9 @@ const cors = require("cors");
 require("dotenv").config();
 const OpenAI = require("openai");
 
+const { ChatOpenAI } = require("@langchain/openai");
+const { ChatPromptTemplate } = require("@langchain/core/prompts");
+
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./chat.db");
 
@@ -26,13 +29,24 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// frage endpunkt
+// langchain settings
+const chatModel = new ChatOpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: "gpt-3.5-turbo",
+  streaming: true,
+});
+
+const chatPrompt = ChatPromptTemplate.fromMessages([
+  ["system", "You are a helpful assistant."],
+  ["human", "{input}"],
+]);
+
+// questions
 app.post("/", async (req, res) => {
   try {
     const userMessage =
       req.body.message || "Hello, I didn't write a question yet!";
 
-    // Check, ob die Frage bereits in der Datenbank steht
     db.get(
       "SELECT assistant_response FROM chat WHERE user_message = ?",
       [userMessage],
@@ -48,17 +62,10 @@ app.post("/", async (req, res) => {
             cached: true,
           });
         } else {
-          const response = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: req.body.message || "Hello" }],
-            max_tokens: 50,
-            temperature: 0,
-            top_p: 1,
-            frequency_penalty: 0,
-            presence_penalty: 0,
-          });
+          const chain = chatPrompt.pipe(chatModel);
+          const response = await chain.invoke({ input: userMessage });
 
-          const assistantResponse = response.choices[0].message.content;
+          const assistantResponse = response.content;
 
           db.run(
             "INSERT INTO chat (user_message, assistant_response) VALUES (?, ?)",
@@ -79,7 +86,7 @@ app.post("/", async (req, res) => {
   }
 });
 
-// stream endpukt
+// streaming
 app.post("/stream", async (req, res) => {
   try {
     const userMessage =
@@ -90,22 +97,13 @@ app.post("/stream", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: userMessage }],
-      max_tokens: 200,
-      temperature: 0,
-      top_p: 1,
-      frequency_penalty: 0,
-      presence_penalty: 0,
-      stream: true,
-    });
+    const prompt = await chatPrompt.format({ input: userMessage });
+    const stream = await chatModel.stream(prompt);
 
-    for await (const event of response) {
-      const content = event.choices[0]?.delta.content;
-      if (content) {
-        assistantResponse += content;
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+    for await (const chunk of stream) {
+      if (chunk.content) {
+        assistantResponse += chunk.content;
+        res.write(`data: ${JSON.stringify({ content: chunk.content })}\n\n`);
       }
     }
 
@@ -122,7 +120,7 @@ app.post("/stream", async (req, res) => {
   }
 });
 
-// history endpunkt
+// history
 app.get("/history", (req, res) => {
   const history = db.all(
     `SELECT user_message, assistant_response FROM chat`,
